@@ -1,5 +1,6 @@
 #![feature(str_from_utf16_endian)]
 
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::{sync::RwLock};
 
 use lazy_static::lazy_static;
@@ -10,14 +11,16 @@ use windows::Win32::{Foundation::HINSTANCE, System::LibraryLoader::GetModuleFile
 use std::ffi::CStr;
 use std::path::Path;
 
+mod config;
 mod log;
 mod proxy;
 mod interceptor;
 mod marshal;
 mod modules;
+mod overlay;
 mod util;
 
-use crate::modules::{Http, MhyContext, ModuleManager, Security, WinHttp};
+use crate::modules::{Fps, Http, MhyContext, ModuleManager, Security, WinHttp};
 
 unsafe fn thread_func() {
     let mut module_manager = MODULE_MANAGER.write().unwrap();
@@ -52,8 +55,15 @@ unsafe fn thread_func() {
     // the account sdk uses winhttp, not the C# path above
     module_manager.enable(MhyContext::<WinHttp>::new(&exe_name));
 
+    config::load();
+    module_manager.enable(MhyContext::<Fps>::new(&exe_name));
+
     crate::plog!("Successfully initialized!");
+
+    overlay::start(MODULE.load(Ordering::Relaxed));
 }
+
+static MODULE: AtomicUsize = AtomicUsize::new(0);
 
 lazy_static! {
     static ref MODULE_MANAGER: RwLock<ModuleManager> = RwLock::new(ModuleManager::default());
@@ -61,8 +71,9 @@ lazy_static! {
 
 #[no_mangle]
 #[allow(non_snake_case)]
-unsafe extern "system" fn DllMain(_: HINSTANCE, call_reason: u32, _: *mut ()) -> bool {
+unsafe extern "system" fn DllMain(module: HINSTANCE, call_reason: u32, _: *mut ()) -> bool {
     if call_reason == DLL_PROCESS_ATTACH {
+        MODULE.store(module.0 as usize, Ordering::Relaxed);
         log::start_session();
 
         // here, not on the thread: the game may call the exports once DllMain returns
